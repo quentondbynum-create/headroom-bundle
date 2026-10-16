@@ -1,0 +1,87 @@
+name: Build Headroom Audio Complete Bundle
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-bundle:
+    runs-on: macos-14
+
+    steps:
+      - name: Download macOS DMG artifacts from plugin repos
+        env:
+          GH_TOKEN: ${{ secrets.BUNDLE_PAT }}
+        run: |
+          set -euo pipefail
+          mkdir -p dmg pkgs
+          items=(
+            "qflip:38799147395:QFlip-macOS-DMG"
+            "qeq:38697888533:QEQ-macOS-DMG"
+            "qcomp:38798365926:QComp-macOS-DMG"
+            "qsplit:38838270705:QSplit-macOS-DMG"
+            "qfinder:38798639940:QFinder-macOS-DMG"
+            "qchop:38798740650:QChop-macOS-DMG"
+            "qsub:38798841860:QSub-macOS-DMG"
+            "qvox:38798924283:QVox-macOS-DMG"
+            "qglitch:38799002309:QGlitch-macOS-DMG"
+          )
+          for item in "${items[@]}"; do
+            repo="${item%%:*}"
+            rest="${item#*:}"
+            run_id="${rest%%:*}"
+            artifact_name="${rest##*:}"
+            echo "== ${repo} / ${artifact_name} =="
+            artifact_id=$(gh api "repos/quentondbynum-create/${repo}/actions/runs/${run_id}/artifacts" --jq ".artifacts[] | select(.name==\"${artifact_name}\" and .expired==false) | .id" | head -n 1)
+            if [ -z "${artifact_id}" ]; then
+              echo "ERROR: artifact ${artifact_name} not found (or expired) in ${repo} run ${run_id}"
+              exit 1
+            fi
+            mkdir -p "dmg/${repo}"
+            gh api "repos/quentondbynum-create/${repo}/actions/artifacts/${artifact_id}/zip" > "dmg/${repo}.zip"
+            unzip -oq "dmg/${repo}.zip" -d "dmg/${repo}"
+            ls "dmg/${repo}"
+          done
+
+      - name: Extract .pkg installers from DMGs
+        run: |
+          set -euo pipefail
+          for repo in qflip qeq qcomp qsplit qfinder qchop qsub qvox qglitch; do
+            dmg=$(find "dmg/${repo}" -maxdepth 2 -name "*.dmg" | head -n 1)
+            if [ -z "${dmg}" ]; then
+              echo "ERROR: no .dmg found for ${repo}"
+              exit 1
+            fi
+            echo "== mounting ${dmg} =="
+            mnt=$(mktemp -d /tmp/bundlemnt.XXXXXX)
+            hdiutil attach "${dmg}" -mountpoint "${mnt}" -nobrowse -quiet
+            pkg=$(find "${mnt}" -maxdepth 2 -name "*.pkg" | head -n 1)
+            if [ -z "${pkg}" ]; then
+              echo "ERROR: no .pkg inside ${dmg}"
+              hdiutil detach "${mnt}" -quiet || true
+              exit 1
+            fi
+            cp -R "${pkg}" "pkgs/${repo}-$(basename "${pkg}")"
+            hdiutil detach "${mnt}" -quiet
+            rm -rf "${mnt}"
+          done
+          echo "Collected packages:"
+          ls -la pkgs/
+
+      - name: Build combined installer package
+        run: |
+          set -euo pipefail
+          cd pkgs
+          synth_args=()
+          for p in *.pkg; do
+            synth_args+=(--package "${p}")
+          done
+          productbuild --synthesize "${synth_args[@]}" distribution.xml
+          sed -i '' 's|<title>.*</title>|<title>Headroom Audio Complete Bundle</title>|' distribution.xml || true
+          productbuild --distribution distribution.xml --package-path . "${GITHUB_WORKSPACE}/Headroom Audio Complete Bundle.pkg"
+          ls -la "${GITHUB_WORKSPACE}/"*.pkg
+
+      - name: Upload bundle artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: HeadroomAudio-Complete-Bundle-macOS
+          path: "Headroom Audio Complete Bundle.pkg"
