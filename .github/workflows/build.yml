@@ -1,5 +1,6 @@
 name: Build Headroom Audio Complete Bundle
 
+# Manual trigger: Actions tab -> "Build Headroom Audio Complete Bundle" -> Run workflow
 on:
   workflow_dispatch:
 
@@ -10,28 +11,36 @@ jobs:
     steps:
       - name: Download macOS DMG artifacts from plugin repos
         env:
+          # Classic PAT with `repo` scope (or fine-grained PAT with Actions:read
+          # on the 9 plugin repos). Stored as repo secret BUNDLE_PAT.
+          # GITHUB_TOKEN cannot read artifacts across repos, so a PAT is required.
           GH_TOKEN: ${{ secrets.BUNDLE_PAT }}
         run: |
           set -euo pipefail
           mkdir -p dmg pkgs
+
+          # repo:run_id:artifact_name  (run IDs pinned to known-good builds)
           items=(
             "qflip:38799147395:QFlip-macOS-DMG"
             "qeq:38697888533:QEQ-macOS-DMG"
             "qcomp:38798365926:QComp-macOS-DMG"
-            "qsplit:38838270705:QSplit-macOS-DMG"
+            "qsplit:38970864912:QSplit-macOS-DMG"
+            "noctis:38994372446:NOCTIS-macOS-DMG"
             "qfinder:38798639940:QFinder-macOS-DMG"
             "qchop:38798740650:QChop-macOS-DMG"
             "qsub:38798841860:QSub-macOS-DMG"
             "qvox:38798924283:QVox-macOS-DMG"
             "qglitch:38799002309:QGlitch-macOS-DMG"
           )
+
           for item in "${items[@]}"; do
             repo="${item%%:*}"
             rest="${item#*:}"
             run_id="${rest%%:*}"
             artifact_name="${rest##*:}"
             echo "== ${repo} / ${artifact_name} =="
-            artifact_id=$(gh api "repos/quentondbynum-create/${repo}/actions/runs/${run_id}/artifacts" --jq ".artifacts[] | select(.name==\"${artifact_name}\" and .expired==false) | .id" | head -n 1)
+            artifact_id=$(gh api "repos/quentondbynum-create/${repo}/actions/runs/${run_id}/artifacts" \
+              --jq ".artifacts[] | select(.name==\"${artifact_name}\" and .expired==false) | .id" | head -n 1)
             if [ -z "${artifact_id}" ]; then
               echo "ERROR: artifact ${artifact_name} not found (or expired) in ${repo} run ${run_id}"
               exit 1
@@ -45,7 +54,7 @@ jobs:
       - name: Extract .pkg installers from DMGs
         run: |
           set -euo pipefail
-          for repo in qflip qeq qcomp qsplit qfinder qchop qsub qvox qglitch; do
+          for repo in qflip qeq qcomp qsplit qfinder qchop qsub qvox qglitch noctis; do
             dmg=$(find "dmg/${repo}" -maxdepth 2 -name "*.dmg" | head -n 1)
             if [ -z "${dmg}" ]; then
               echo "ERROR: no .dmg found for ${repo}"
@@ -60,6 +69,7 @@ jobs:
               hdiutil detach "${mnt}" -quiet || true
               exit 1
             fi
+            # Prefix with repo name so filenames can never collide
             cp -R "${pkg}" "pkgs/${repo}-$(basename "${pkg}")"
             hdiutil detach "${mnt}" -quiet
             rm -rf "${mnt}"
@@ -76,8 +86,10 @@ jobs:
             synth_args+=(--package "${p}")
           done
           productbuild --synthesize "${synth_args[@]}" distribution.xml
+          # Friendly title shown in the Installer app
           sed -i '' 's|<title>.*</title>|<title>Headroom Audio Complete Bundle</title>|' distribution.xml || true
-          productbuild --distribution distribution.xml --package-path . "${GITHUB_WORKSPACE}/Headroom Audio Complete Bundle.pkg"
+          productbuild --distribution distribution.xml --package-path . \
+            "${GITHUB_WORKSPACE}/Headroom Audio Complete Bundle.pkg"
           ls -la "${GITHUB_WORKSPACE}/"*.pkg
 
       - name: Upload bundle artifact
